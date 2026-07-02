@@ -159,29 +159,47 @@ These are ae-side issues (missing `dependsOn` declarations for generated sources
 
 ## Recommendations
 
+### Automated Removal Attempt — Results
+
+We attempted automated removal of all 1,663 flagged deps:
+- **1,145** matched and were removed from build files by a script
+- **544** couldn't be matched (closure-style deps, trailing comments, config name mismatches)
+- **~13 modules** broke compilation due to false positives (transitive usage not detected by bytecode analysis)
+- False positive rate: ~1% — low, but enough to require per-module validation
+- The false positives are concentrated in core library modules (`:appian-libraries:ae`, `:appian-libraries:asl`, etc.) whose downstream dependents rely on transitive class exposure
+
 ### Immediate (high leverage, low risk)
 
-1. **Remove unused deps from top offenders first.** Start with `:test` (56), `:appian-services:serverless-sail-evaluator` (48), `:deployment:assembly` (43). These are likely causing the most unnecessary CI triggers.
+1. **Start with leaf modules / deployables** — these have no downstream dependents so can't cause transitive breakage:
+   - `:test` (56 unused) — test infrastructure
+   - `:appian-services:serverless-sail-evaluator` (48) — deployable service
+   - `:deployment:assembly` (43) — packaging
+   - `:appian-services:docs-evaluator` (31) — deployable service
+   - `:appian-services:docker-services:actor-executor` (13) — deployable service
 
-2. **Validate before removing.** Run the affected module's unit tests after removing each dependency to confirm it's truly unused and not accessed via reflection or runtime-only patterns.
+2. **Validate each module with `./gradlew :module:path:compileJava`** after removing its unused deps. If it compiles, the removal is safe.
 
-3. **Fix the 4 excluded projects.** Add `dependsOn(tasks.named("openApiGenerate"))` to the relevant source compilation tasks in `tempo` and `lcp-api-server-generated` modules.
+3. **Do NOT bulk-remove from core library modules** without checking all downstream consumers compile. Deps marked "unused" in `:appian-libraries:ae` may be transitively required by other modules.
+
+4. **Fix the 4 excluded projects** to get full coverage:
+   - `tempo`, `lcp-api-server-generated-*`: add `dependsOn(tasks.named("openApiGenerate"))` to source tasks
+   - `gwt-components`: pre-existing `compressJavascript` failure, unrelated to DAGP
 
 ### Short-term (CI integration)
 
-4. **Publish DAGP to Appian's Artifactory** so the whole team can use it without `mavenLocal()`.
+5. **Publish DAGP to Appian's Artifactory** so the whole team can use it without `mavenLocal()`.
 
-5. **Add a CI job** (initially manual/nightly) that runs `generateBuildHealth` and publishes the report as an artifact. This creates visibility into dependency hygiene over time.
+6. **Add a nightly CI job** that runs `generateBuildHealth` and publishes the report. Track dependency count over time.
 
-6. **Scope CI enforcement to changed files only.** When a Gradle file is modified in a PR, run DAGP on that specific module and fail if new unused deps are introduced.
+7. **Scope CI enforcement to changed files only.** When a Gradle file is modified in a PR, run DAGP on that module and warn if new unused deps are introduced.
 
 ### Medium-term (deeper impact)
 
-7. **Enable test source set analysis** once disk space is available (or on CI runners with large scratch volumes). Test deps that are unused are also causing unnecessary triggers in integration-tier jobs.
+8. **Enable test source set analysis** (requires CI runners with 20+ GB scratch disk). Test deps cause unnecessary integration-tier triggers.
 
-8. **Investigate the autofix/rewrite feature.** DAGP can auto-remove unused deps, but it needs grammar changes to handle `globalDep()` syntax. This is a separate effort.
+9. **Measure CI trigger reduction.** After removing unused deps from the top modules, count how many fewer integration-tier jobs fire per average PR.
 
-9. **Measure CI trigger reduction.** After removing unused deps from the top modules, measure how many fewer integration-tier jobs are triggered per average PR. This quantifies the ROI.
+10. **Investigate DAGP's autofix for `globalDep()`.** Would require extending the ANTLR grammar — separate effort.
 
 ---
 
