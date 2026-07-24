@@ -7,11 +7,72 @@ We're running DAGP (Dependency Analysis Gradle Plugin) against the Appian `ae` m
 There are also **pattern mismatches** in our removal script that prevent automated cleanup of legitimately unused deps.
 
 **Repos:**
-- DAGP (our fork): `~/dev/dependency-analysis-gradle-plugin`
+- DAGP (our fork): `~/repo/dependency-analysis-gradle-plugin`
 - ae worktree: `~/repo/wt/ae/LCP-60585-dagp-integration`
 - DAGP is published to mavenLocal as version `3.16.1-SNAPSHOT`
 
 **Task:** LCP-60585
+
+---
+
+## Latest Run — July 23, 2026
+
+### Results
+
+| Metric | Value |
+|--------|-------|
+| Projects analyzed | 732 |
+| Unused deps (implementation + api) | 1,479 |
+| Unused deps (all configs incl. test) | 5,325 |
+| In truth table (still reported) | 747 |
+| New findings (not in truth table) | 732 |
+| No longer reported (resolved) | 109 |
+
+### Comparison with Truth Table
+
+| Category | Count |
+|----------|-------|
+| KEPT_NEEDED (false positives) still present | 84 |
+| REMOVED (true positives) re-flagged | 96 |
+| NOT_ATTEMPTED still present | 567 |
+| Dropped from report (resolved) | 109 |
+
+### 732 New Findings Breakdown
+
+| Category | Count | False Positive Risk |
+|----------|-------|-------------------|
+| Project deps (transitive exposure) | 302 | HIGH |
+| Spring framework deps | 69 | HIGH |
+| Runtime annotation deps | 27 | HIGH |
+| Logging deps (slf4j, log4j) | 26 | HIGH |
+| Feature toggle client | 16 | MEDIUM |
+| Komodo/Kafka | 8 | MEDIUM |
+| Other external modules | 284 | MIXED |
+
+Top projects: `:deployment:assembly` (41), `:serverless-sail-evaluator` (30), `:docs-evaluator` (27), `:test` (20)
+
+### 88 False Positives (KEPT_NEEDED) Root Causes
+
+| Root Cause | Count | % |
+|-----------|-------|---|
+| Transitive exposure (project deps) | 80 | 91% |
+| Runtime-only deps | 3 | 3% |
+| Framework classpath deps | 2 | 2% |
+| Runtime annotations | 1 | 1% |
+| Other | 2 | 2% |
+
+### Correct Run Command
+
+```bash
+# Do NOT pass -Dorg.gradle.jvmargs — let gradle.properties (16G) take effect
+./gradlew generateBuildHealth --no-configuration-cache --no-build-cache --continue \
+  -Ddependency.analysis.cache.max=300 \
+  -Ddependency.analysis.batch.size=100 \
+  -Pdependency.analysis.project.includes='^(?!.*(tempo|lcp-api-server-generated|appian-gwt-components)).*$' \
+  -x :appian-libraries:gwt:appian-gwt-components:compressJavascript
+```
+
+**Important:** The `gradle.properties` already sets `-Xmx16G`. Passing `-Dorg.gradle.jvmargs="-Xmx12G"` on the command line OVERRIDES and REDUCES the heap, causing OOM.
 
 ---
 

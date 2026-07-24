@@ -59,10 +59,9 @@ dependencyAnalysis {
 }
 ```
 
-3. Run:
+3. Run (do NOT pass -Dorg.gradle.jvmargs — gradle.properties already sets 16G):
 ```bash
 ./gradlew generateBuildHealth --no-configuration-cache --no-build-cache --continue \
-  -Dorg.gradle.jvmargs="-Xmx12G -XX:+UseG1GC" \
   -Ddependency.analysis.cache.max=300 \
   -Ddependency.analysis.batch.size=100 \
   -Pdependency.analysis.project.includes='^(?!.*(tempo|lcp-api-server-generated|appian-gwt-components)).*$' \
