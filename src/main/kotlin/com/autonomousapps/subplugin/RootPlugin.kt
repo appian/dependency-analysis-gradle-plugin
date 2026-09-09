@@ -5,9 +5,11 @@ package com.autonomousapps.subplugin
 import com.autonomousapps.BuildHealthPlugin
 import com.autonomousapps.DependencyAnalysisExtension
 import com.autonomousapps.Flags.AUTO_APPLY
+import com.autonomousapps.Flags.batchSize
 import com.autonomousapps.Flags.printBuildHealth
 import com.autonomousapps.artifacts.Publisher.Companion.interProjectPublisher
 import com.autonomousapps.artifacts.Resolver.Companion.interProjectResolver
+import com.autonomousapps.internal.ProjectBatcher
 import com.autonomousapps.internal.RootOutputPaths
 import com.autonomousapps.internal.advice.DslKind
 import com.autonomousapps.internal.artifacts.DagpArtifacts
@@ -64,6 +66,10 @@ internal class RootPlugin(private val project: Project) {
     project = project,
     artifactDescription = DagpArtifacts.Kind.TYPE_USAGE,
   )
+  private val runtimeDepsResolver = interProjectResolver(
+    project = project,
+    artifactDescription = DagpArtifacts.Kind.RUNTIME_DEPS,
+  )
 
   fun apply() = project.run {
     logger.log("Adding root project tasks")
@@ -102,6 +108,7 @@ internal class RootPlugin(private val project: Project) {
   /** Root project. Configures lifecycle tasks that aggregates reports across all subprojects. */
   private fun Project.configureRootProject() {
     val paths = RootOutputPaths(this)
+    val batchSize = batchSize(100)
 
     val computeDuplicatesTask =
       tasks.register("computeDuplicateDependencies", ComputeDuplicateDependenciesTask::class.java) { t ->
@@ -119,8 +126,38 @@ internal class RootPlugin(private val project: Project) {
       t.output.set(paths.allLibsVersionsTomlPath)
     }
 
+    // Filter transitive exposure false positives before generating build health report.
+    // This cross-references type usage data to suppress "remove" advice for deps that
+    // downstream consumers access transitively.
+    val filterTransitiveExposureTask =
+      tasks.register("filterTransitiveExposure", FilterTransitiveExposureTask::class.java) { t ->
+        t.projectHealthReports.setFrom(adviceResolver.internal.map { it.artifactsFor("json").artifactFiles })
+        t.typeUsageReports.setFrom(typeUsagesResolver.internal.map { it.artifactsFor("json").artifactFiles })
+        t.publicClassesReports.setFrom(publicClassesResolver.internal.map { it.artifactsFor("json").artifactFiles })
+        t.runtimeDepsReports.setFrom(runtimeDepsResolver.internal.map { it.artifactsFor("json").artifactFiles })
+        val runtimeUsageConfig = dagpExtension.runtimeUsageHandler.config()
+        t.heuristicEnabled.set(runtimeUsageConfig.enabled)
+        t.heuristicStripPrefixes.set(runtimeUsageConfig.stripPrefixes)
+        t.heuristicStripSuffixes.set(runtimeUsageConfig.stripSuffixes)
+        t.heuristicSkipLeadingSegments.set(runtimeUsageConfig.skipLeadingSegments)
+        t.heuristicStopwords.set(runtimeUsageConfig.stopwords)
+        t.heuristicMinSegmentLength.set(runtimeUsageConfig.minSegmentLength)
+        val adviceFilterConfig = dagpExtension.adviceFilterHandler.config()
+        t.includeCoordinates.set(adviceFilterConfig.includeCoordinates)
+        t.excludeCoordinates.set(adviceFilterConfig.excludeCoordinates)
+        t.transitiveDepth.set(adviceFilterConfig.transitiveDepth)
+        t.outputDir.set(layout.buildDirectory.dir("dagp-filtered-advice"))
+      }
+
     val generateBuildHealthTask = tasks.register("generateBuildHealth", GenerateBuildHealthTask::class.java) { t ->
-      t.projectHealthReports.setFrom(adviceResolver.internal.map { it.artifactsFor("json").artifactFiles })
+      // Use filtered advice (transitive exposure false positives removed).
+      // The filter task writes filtered ProjectAdvice JSONs into its output directory; feed the
+      // directory *contents* (not the directory itself) to GenerateBuildHealthTask, which reads
+      // each entry as a JSON file.
+      t.projectHealthReports.setFrom(
+        fileTree(layout.buildDirectory.dir("dagp-filtered-advice")) { it.include("**/*.json") }
+          .builtBy(filterTransitiveExposureTask)
+      )
       t.projectMetadataReports.setFrom(projectMetadataResolver.internal.map { it.artifactsFor("json").artifactFiles })
       t.reportingConfig.set(dagpExtension.reportingHandler.config())
       t.projectCount.set(allprojects.size)
@@ -169,6 +206,38 @@ internal class RootPlugin(private val project: Project) {
       dependencies.let { d ->
         publishers.forEach { publisher ->
           d.add(publisher.declarableName, d.project(mapOf("path" to p.path)))
+        }
+      }
+    }
+
+    // Register batch aggregate tasks for memory management on very large builds.
+    // These add execution ordering constraints so not all project analyses are in-flight simultaneously.
+    val projectPaths = allprojects.map { it.path }.toSet()
+    val batches = ProjectBatcher.batch(projectPaths, batchSize)
+
+    if (batches.size > 1) {
+      val batchTasks = batches.mapIndexed { index, _ ->
+        tasks.register("dagpBatchAggregate$index", BatchAggregateTask::class.java) { t ->
+          t.batchIndex.set(index)
+          t.outputDir.set(layout.buildDirectory.dir("dagp-batches/batch-$index"))
+          t.projectHealthReports.setFrom(
+            adviceResolver.internal.map { it.artifactsFor("json").artifactFiles }
+          )
+          t.projectMetadataReports.setFrom(
+            projectMetadataResolver.internal.map { it.artifactsFor("json").artifactFiles }
+          )
+        }
+      }
+
+      // Add sequential ordering between batches
+      batchTasks.windowed(2).forEach { (earlier, later) ->
+        later.configure { it.mustRunAfter(earlier) }
+      }
+
+      // Make generateBuildHealth depend on all batch tasks (ensures all batches complete)
+      tasks.named("generateBuildHealth") { t ->
+        batchTasks.forEach { batchTask ->
+          t.dependsOn(batchTask)
         }
       }
     }
