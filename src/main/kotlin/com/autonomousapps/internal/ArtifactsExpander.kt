@@ -7,8 +7,8 @@ import com.autonomousapps.internal.utils.filterToOrderedSet
 import java.io.File
 
 /**
- * Takes a file which is either a jar or a directory that may contain class files and maybe expands it to sibling source
- * sets that also contain class files.
+ * Takes a file which is either a jar or a directory that may contain class files and maybe expands it to sibling
+ * languages that also contain class files.
  *
  * E.g., takes `build/classes/java/main` and potentially returns (`build/classes/java/main`, `build/classes/kotlin/main`)
  *
